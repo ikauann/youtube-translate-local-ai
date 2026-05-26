@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>YouTube Vocab Saver</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h2>YouTube Vocab Saver</h2>
+
+  <div class="field">
+    <label for="model">Modelo Ollama</label>
+    <input type="text" id="model" placeholder="llama3.2">
+  </div>
+
+  <div class="field">
+    <label for="vault">Nome do Vault Obsidian</label>
+    <input type="text" id="vault" placeholder="trabalho-notas">
+  </div>
+
+  <div class="field">
+    <label for="folder">Pasta destino no vault</label>
+    <input type="text" id="folder" placeholder="3-estudo/vocabulario">
+  </div>
+
+  <button id="save">Salvar configurações</button>
+  <div id="msg"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
