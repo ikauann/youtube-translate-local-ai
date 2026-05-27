@@ -1,11 +1,11 @@
-.vocab-word {
+.vocab-saver-active .vocab-word {
   cursor: pointer;
   border-radius: 2px;
   padding: 0 1px;
   transition: background-color 0.15s;
 }
 
-.vocab-word:hover {
+.vocab-saver-active .vocab-word:hover {
   background-color: rgba(124, 140, 248, 0.35);
   text-decoration: underline;
   text-decoration-color: #7c8cf8;

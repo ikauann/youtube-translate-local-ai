@@ -5,7 +5,8 @@
   "description": "Clique em palavras das legendas do YouTube para salvar no Obsidian com definição do Llama",
   "permissions": ["storage", "tabs"],
   "host_permissions": [
-    "https://www.youtube.com/*",
+    "http://*/*",
+    "https://*/*",
     "http://localhost:11434/*"
   ],
   "background": {
@@ -13,7 +14,10 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.youtube.com/*"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
       "js": ["content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
