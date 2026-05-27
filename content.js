@@ -11,13 +11,14 @@
   const defaults = {
     ollamaModel: 'llama3.2',
     vaultName: 'trabalho-notas',
-    targetFolder: '3-estudo/vocabulario'
+    targetFolder: '3-estudo/vocabulario',
+    vocabSelectionMode: 'word'
   };
 
   let settings = { ...defaults };
 
   // Load settings and active state
-  chrome.storage.local.get(['vocabSaverActive', ...Object.keys(defaults)], saved => {
+  chrome.storage.local.get(['vocabSaverActive', 'vocabSelectionMode', ...Object.keys(defaults)], saved => {
     settings = { ...defaults, ...saved };
     vocabSaverActive = !!saved.vocabSaverActive;
     injectToggleButton();
@@ -32,6 +33,10 @@
         vocabSaverActive = !!changes.vocabSaverActive.newValue;
         updateToggleButtonState();
         toggleExtensionBehavior();
+      }
+      if ('vocabSelectionMode' in changes) {
+        settings.vocabSelectionMode = changes.vocabSelectionMode.newValue;
+        updateToggleButtonState();
       }
       // Keep settings updated
       const keys = Object.keys(defaults);
@@ -66,6 +71,106 @@
     range.setStart(textNode, start);
     range.setEnd(textNode, end);
     return { range, word };
+  }
+
+  // ── Sentence Range & Extraction Helpers ──────────────────────────────────
+
+  function getAbsoluteOffset(blockEl, textNode, offset) {
+    let absoluteOffset = 0;
+    const walker = document.createTreeWalker(blockEl, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (node === textNode) {
+        absoluteOffset += offset;
+        break;
+      }
+      absoluteOffset += node.textContent.length;
+    }
+    return absoluteOffset;
+  }
+
+  function getSentenceBoundaries(text, offset) {
+    let start = offset;
+    let end = offset;
+    
+    const isTerminator = (char, nextChar) => {
+      if (['.', '!', '?'].includes(char)) {
+        return !nextChar || /\s/.test(nextChar);
+      }
+      return false;
+    };
+
+    // Search left
+    while (start > 0) {
+      if (isTerminator(text[start - 1], text[start])) {
+        while (start < offset && /\s/.test(text[start])) {
+          start++;
+        }
+        break;
+      }
+      start--;
+    }
+
+    // Search right
+    while (end < text.length) {
+      if (isTerminator(text[end], text[end + 1])) {
+        end++; // Include the terminator
+        break;
+      }
+      end++;
+    }
+
+    return { start, end };
+  }
+
+  function createRangeFromOffsets(blockEl, startOffset, endOffset) {
+    const range = document.createRange();
+    let currentOffset = 0;
+    let startNode = null;
+    let startNodeOffset = 0;
+    let endNode = null;
+    let endNodeOffset = 0;
+
+    const walker = document.createTreeWalker(blockEl, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const len = node.textContent.length;
+      
+      if (!startNode && currentOffset + len >= startOffset) {
+        startNode = node;
+        startNodeOffset = startOffset - currentOffset;
+      }
+      if (!endNode && currentOffset + len >= endOffset) {
+        endNode = node;
+        endNodeOffset = endOffset - currentOffset;
+        break;
+      }
+      currentOffset += len;
+    }
+
+    if (startNode && endNode) {
+      range.setStart(startNode, startNodeOffset);
+      range.setEnd(endNode, endNodeOffset);
+      return range;
+    }
+    return null;
+  }
+
+  function getSentenceRangeAtPosition(textNode, offset) {
+    const blockEl = textNode.parentElement?.closest('p, li, blockquote, h1, h2, h3, h4, h5, h6, div, [class*="caption-window"]');
+    if (!blockEl) return null;
+
+    const text = blockEl.textContent;
+    const absOffset = getAbsoluteOffset(blockEl, textNode, offset);
+    const { start, end } = getSentenceBoundaries(text, absOffset);
+
+    const sentence = text.slice(start, end).trim();
+    if (!sentence || sentence.length < 3) return null;
+
+    const range = createRangeFromOffsets(blockEl, start, end);
+    if (!range) return null;
+
+    return { range, sentence };
   }
 
   // ── Caption word wrapping (YouTube captions specific) ───────────────────
@@ -138,7 +243,8 @@
   // ── Word click → popup ─────────────────────────────────────────────────
 
   function handleWordClick(e) {
-    if (!vocabSaverActive) return;
+    const isSentenceMode = settings.vocabSelectionMode === 'sentence';
+    if (!vocabSaverActive || isSentenceMode) return; // Ignore word-span click in sentence mode
     e.stopPropagation();
     e.preventDefault();
 
@@ -175,10 +281,11 @@
     let word = '';
     let contextText = '';
     let videoCtx = null;
+    const isSentenceMode = settings.vocabSelectionMode === 'sentence';
 
     // Check if we clicked on an existing wrapped vocab-word (e.g. YouTube subtitles)
     const vocabWordSpan = e.target.closest('.vocab-word');
-    if (vocabWordSpan) {
+    if (vocabWordSpan && !isSentenceMode) {
       word = vocabWordSpan.dataset.word;
       const captionWindow = e.target.closest('.caption-window');
       contextText = captionWindow ? captionWindow.textContent.trim() : '';
@@ -193,11 +300,18 @@
       if (textNode.nodeType !== Node.TEXT_NODE) return;
 
       const offset = range.startOffset;
-      const wordRes = getWordRangeAtPosition(textNode, offset);
-      if (!wordRes) return;
       
-      word = wordRes.word;
-      contextText = textNode.parentElement ? textNode.parentElement.textContent.trim() : '';
+      if (isSentenceMode) {
+        const sentenceRes = getSentenceRangeAtPosition(textNode, offset);
+        if (!sentenceRes) return;
+        word = sentenceRes.sentence;
+        contextText = textNode.parentElement ? textNode.parentElement.textContent.trim() : '';
+      } else {
+        const wordRes = getWordRangeAtPosition(textNode, offset);
+        if (!wordRes) return;
+        word = wordRes.word;
+        contextText = textNode.parentElement ? textNode.parentElement.textContent.trim() : '';
+      }
 
       const pageTitle = document.title || 'Página Web';
       const pageUrl = window.location.href;
@@ -258,18 +372,27 @@
       return;
     }
 
-    // Don't show range highlight inside wrapped spans on YouTube if we are hovering captions (since they already highlight via CSS)
-    if (textNode.parentElement && textNode.parentElement.closest('.caption-window')) {
+    const isSentenceMode = settings.vocabSelectionMode === 'sentence';
+
+    // Don't show range highlight inside wrapped spans on YouTube if we are hovering captions and NOT in sentence mode (captions have CSS highlights)
+    if (!isSentenceMode && textNode.parentElement && textNode.parentElement.closest('.caption-window')) {
       if (highlightOverlay) highlightOverlay.style.display = 'none';
       return;
     }
 
     const offset = range.startOffset;
-    const wordRes = getWordRangeAtPosition(textNode, offset);
+    let targetRange = null;
 
-    if (wordRes) {
-      const { range: wordRange } = wordRes;
-      const rect = wordRange.getBoundingClientRect();
+    if (isSentenceMode) {
+      const sentenceRes = getSentenceRangeAtPosition(textNode, offset);
+      if (sentenceRes) targetRange = sentenceRes.range;
+    } else {
+      const wordRes = getWordRangeAtPosition(textNode, offset);
+      if (wordRes) targetRange = wordRes.range;
+    }
+
+    if (targetRange) {
+      const rect = targetRange.getBoundingClientRect();
 
       createHighlightOverlay();
       highlightOverlay.style.display = 'block';
@@ -313,6 +436,94 @@
     toggleShadowRoot = toggleButtonContainer.attachShadow({ mode: 'closed' });
 
     const TOGGLE_CSS = `
+      .menu-container {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 8px;
+        position: relative;
+      }
+
+      .menu-panel {
+        display: flex;
+        flex-direction: column;
+        background: rgba(20, 20, 35, 0.85);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 6px;
+        gap: 4px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+        opacity: 0;
+        visibility: hidden;
+        transform: translateY(10px);
+        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        pointer-events: none;
+        width: 120px;
+      }
+
+      /* Hover container to reveal menu panel when active */
+      .menu-container:hover .menu-panel.active-state {
+        opacity: 1;
+        visibility: visible;
+        transform: translateY(0);
+        pointer-events: auto;
+      }
+
+      .menu-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: none;
+        border: none;
+        color: #8888aa;
+        padding: 8px 10px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 12px;
+        font-weight: 500;
+        text-align: left;
+        transition: all 0.2s;
+        width: 100%;
+        position: relative;
+        outline: none;
+      }
+
+      .menu-item:hover {
+        background: rgba(255, 255, 255, 0.06);
+        color: #e8e8f0;
+      }
+
+      .menu-item.selected {
+        color: #7c8cf8;
+        background: rgba(124, 140, 248, 0.1);
+      }
+
+      .menu-icon {
+        width: 14px;
+        height: 14px;
+        stroke: currentColor;
+        stroke-width: 2.5;
+        fill: none;
+      }
+
+      .active-dot {
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background: #7c8cf8;
+        position: absolute;
+        right: 10px;
+        opacity: 0;
+        transition: opacity 0.2s;
+      }
+
+      .menu-item.selected .active-dot {
+        opacity: 1;
+      }
+
       .toggle-btn {
         width: 48px;
         height: 48px;
@@ -393,31 +604,57 @@
         transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
         pointer-events: none;
       }
+      
+      .menu-container:hover .tooltip {
+        opacity: 0 !important;
+        visibility: hidden !important;
+      }
+      
       .toggle-btn:hover + .tooltip {
         opacity: 1;
         visibility: visible;
         transform: translateY(0);
       }
 
-      svg {
+      svg.toggle-icon {
         width: 22px;
         height: 22px;
         transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
       }
-      .toggle-btn:hover svg {
+      .toggle-btn:hover svg.toggle-icon {
         transform: rotate(5deg);
       }
     `;
 
     toggleShadowRoot.innerHTML = `
       <style>${TOGGLE_CSS}</style>
-      <button class="toggle-btn inactive" id="vocab-toggle-btn">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
-          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
-          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
-        </svg>
-      </button>
-      <div class="tooltip" id="vocab-toggle-tooltip">Ativar Vocab Saver</div>
+      <div class="menu-container">
+        <div class="menu-panel" id="vocab-menu-panel">
+          <button class="menu-item" id="mode-word-btn">
+            <svg class="menu-icon" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+              <path d="M4 7V4h16v3M9 20h6M12 4v16"/>
+            </svg>
+            <span>Palavra</span>
+            <span class="active-dot"></span>
+          </button>
+          <button class="menu-item" id="mode-sentence-btn">
+            <svg class="menu-icon" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+              <line x1="4" y1="9" x2="20" y2="9"></line>
+              <line x1="4" y1="15" x2="14" y2="15"></line>
+            </svg>
+            <span>Frase</span>
+            <span class="active-dot"></span>
+          </button>
+        </div>
+        
+        <button class="toggle-btn inactive" id="vocab-toggle-btn">
+          <svg class="toggle-icon" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+          </svg>
+        </button>
+        <div class="tooltip" id="vocab-toggle-tooltip">Ativar Vocab Saver</div>
+      </div>
     `;
 
     const button = toggleShadowRoot.getElementById('vocab-toggle-btn');
@@ -425,20 +662,46 @@
       const newState = !vocabSaverActive;
       chrome.storage.local.set({ vocabSaverActive: newState });
     });
+
+    const wordBtn = toggleShadowRoot.getElementById('mode-word-btn');
+    const sentenceBtn = toggleShadowRoot.getElementById('mode-sentence-btn');
+
+    if (wordBtn) wordBtn.addEventListener('click', () => {
+      chrome.storage.local.set({ vocabSelectionMode: 'word' });
+    });
+    if (sentenceBtn) sentenceBtn.addEventListener('click', () => {
+      chrome.storage.local.set({ vocabSelectionMode: 'sentence' });
+    });
   }
 
   function updateToggleButtonState() {
     if (!toggleShadowRoot) return;
     const button = toggleShadowRoot.getElementById('vocab-toggle-btn');
     const tooltip = toggleShadowRoot.getElementById('vocab-toggle-tooltip');
+    const menuPanel = toggleShadowRoot.getElementById('vocab-menu-panel');
     if (!button) return;
 
     if (vocabSaverActive) {
       button.className = 'toggle-btn active';
       tooltip.textContent = 'Desativar Vocab Saver (Ativo)';
+      if (menuPanel) menuPanel.classList.add('active-state');
     } else {
       button.className = 'toggle-btn inactive';
       tooltip.textContent = 'Ativar Vocab Saver (Inativo)';
+      if (menuPanel) menuPanel.classList.remove('active-state');
+    }
+
+    // Update selection items Selected style
+    const wordBtn = toggleShadowRoot.getElementById('mode-word-btn');
+    const sentenceBtn = toggleShadowRoot.getElementById('mode-sentence-btn');
+    if (wordBtn && sentenceBtn) {
+      if (settings.vocabSelectionMode === 'sentence') {
+        wordBtn.classList.remove('selected');
+        sentenceBtn.classList.add('selected');
+      } else {
+        wordBtn.classList.add('selected');
+        sentenceBtn.classList.remove('selected');
+      }
     }
   }
 
@@ -618,12 +881,15 @@
       left = 100;
     }
 
+    const isSentence = word.includes(' ');
+    const tagText = isSentence ? 'frase' : 'inglês';
+
     shadowRoot.innerHTML = `
       <style>${POPUP_CSS}</style>
       <div class="popup" style="top:${top}px;left:${left}px;">
         <div class="header">
-          <span class="word-title">${word}</span>
-          <span class="tag">inglês</span>
+          <span class="word-title" title="${word}">${word.length > 25 ? word.slice(0, 22) + '...' : word}</span>
+          <span class="tag">${tagText}</span>
           <button class="close-btn">✕</button>
         </div>
         <div class="divider"></div>
@@ -639,15 +905,20 @@
       .replace(/\s+/g, ' ')
       .trim();
 
+    const startTime = performance.now();
     chrome.runtime.sendMessage(
       {
         type: 'GET_DEFINITION',
         word,
         captionText: cleanCaption,
         videoTitle: videoCtx.videoTitle,
-        channel: videoCtx.channel
+        channel: videoCtx.channel,
+        mode: settings.vocabSelectionMode || 'word'
       },
       response => {
+        const duration = ((performance.now() - startTime) / 1000).toFixed(2);
+        console.log(`[Vocab Saver] Tempo de resposta para "${word.length > 20 ? word.slice(0, 18) + '...' : word}": ${duration}s`);
+        
         if (!shadowRoot) return;
         const popup = shadowRoot.querySelector('.popup');
         popup.querySelector('.loading').remove();
@@ -710,10 +981,12 @@
 
   function saveToObsidian(word, definition, hint, exampleEn, examplePt, videoCtx) {
     const today = new Date().toISOString().split('T')[0];
+    const isSentence = word.includes(' ');
 
+    const clozeTarget = isSentence ? hint : word;
     const clozeExample = exampleEn.replace(
-      new RegExp(`\\b${word}\\b`, 'i'),
-      `==${word}==`
+      new RegExp(`\\b${clozeTarget}\\b`, 'i'),
+      `==${clozeTarget}==`
     );
 
     const content =
@@ -734,10 +1007,19 @@ fonte: "${videoCtx.videoTitle}"
 
 O que significa "${word}"? :: ${definition}
 Como se diz "${hint}" em inglês? :: ${word}
-"${clozeExample}" :: ${word} — ${examplePt}
+"${clozeExample}" :: ${clozeTarget} — ${examplePt}
 `;
 
-    const notePath = `${settings.targetFolder}/${word}`;
+    // Sanitize and truncate the note file name if in sentence mode to avoid OS filesystem issues
+    let noteName = word;
+    if (isSentence) {
+      noteName = word.replace(/[\\/:*?"<>|]/g, '').trim();
+      if (noteName.length > 35) {
+        noteName = noteName.slice(0, 35).trim() + '...';
+      }
+    }
+
+    const notePath = `${settings.targetFolder}/${noteName}`;
     const uri = `obsidian://new?vault=${encodeURIComponent(settings.vaultName)}&name=${encodeURIComponent(notePath)}&content=${encodeURIComponent(content)}`;
 
     window.open(uri);

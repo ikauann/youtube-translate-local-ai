@@ -2,37 +2,62 @@ const DEFAULT_MODEL = 'llama3.2';
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'GET_DEFINITION') {
-    const { word, captionText, videoTitle, channel } = msg;
-    getDefinition(word, captionText, videoTitle, channel)
+    const { word, captionText, videoTitle, channel, mode } = msg;
+    getDefinition(word, captionText, videoTitle, channel, mode)
       .then(result => sendResponse({ ok: true, ...result }))
       .catch(err => sendResponse({ ok: false, error: err.message }));
     return true; // keep channel open for async response
   }
 });
 
-async function getDefinition(word, captionText, videoTitle, channel) {
+async function getDefinition(word, captionText, videoTitle, channel, mode) {
   const { ollamaModel = DEFAULT_MODEL } = await chrome.storage.local.get('ollamaModel');
 
-  const prompt = `Você é um assistente de vocabulário para aprendizes de inglês.
+  let prompt = '';
+  if (mode === 'sentence') {
+    prompt = `Você é um professor de inglês especialista em gramática e tradução.
+Analise a seguinte frase e gere explicações extremamente curtas, concisas e objetivas em português.
 
-Palavra alvo: "${word}"
-Contexto do vídeo: "${videoTitle}"${channel ? ` (canal: ${channel})` : ''}
-Trecho da legenda onde a palavra apareceu: "${captionText}"
+Frase alvo: "${word}"
+Contexto da página: "${captionText}" (Título: "${videoTitle}")
 
 Regras obrigatórias:
-1. Defina APENAS a palavra "${word}" isoladamente — não defina a frase nem o contexto.
-2. O campo "example_en" deve ser uma frase NOVA criada por você. NÃO copie nem adapte o trecho da legenda.
-3. A frase de exemplo deve conter a palavra "${word}" de forma clara e natural.
-4. A frase de exemplo deve ser temáticamente relacionada ao vídeo quando possível.
+1. O campo "translation_pt_br" deve ser a tradução direta, fluida e natural da frase inteira para português brasileiro.
+2. O campo "definition_pt_br" deve explicar a gramática da frase, phrasal verbs, gírias ou expressões idiomáticas contidas nela de forma muito simples (máximo 1 frase curta).
+3. O campo "hint_pt_br" deve apontar a principal estrutura gramatical ou palavra-chave focada na frase (máximo 2 a 3 palavras), ex: "used to", "phrasal verb", "present perfect".
+4. O campo "example_en" deve ser uma nova frase simples e curta em inglês (máximo 10 palavras) que aplique a mesma estrutura gramatical/expressão indicada na "hint_pt_br".
+5. Responda estritamente com JSON válido.
 
-Responda APENAS com JSON válido, sem texto extra:
+JSON:
 {
-  "translation_pt_br": "tradução direta e curta da palavra (1 a 3 palavras), considerando o contexto do vídeo",
-  "definition_pt_br": "definição da palavra '${word}' em português brasileiro (máximo 2 frases)",
-  "hint_pt_br": "dica curta em português (3 a 5 palavras) para lembrar o significado, sem revelar a palavra",
-  "example_en": "frase nova em inglês que usa '${word}' claramente (não copiar da legenda)",
-  "example_pt_br": "tradução da frase de exemplo para português brasileiro"
+  "translation_pt_br": "tradução fluida da frase inteira",
+  "definition_pt_br": "explicação gramatical curta de 1 frase",
+  "hint_pt_br": "estrutura principal focada (2-3 palavras)",
+  "example_en": "nova frase aplicando a mesma estrutura",
+  "example_pt_br": "tradução da nova frase"
 }`;
+  } else {
+    prompt = `Você é um dicionário inglês-português ultrarrápido para estudantes.
+Gere respostas extremamente curtas, concisas e objetivas.
+
+Palavra alvo: "${word}"
+Contexto onde a palavra apareceu: "${captionText}" (Página/Vídeo: "${videoTitle}")
+
+Regras obrigatórias:
+1. Defina APENAS a palavra "${word}" isoladamente.
+2. O campo "definition_pt_br" deve ser uma definição simples em português de no máximo 1 frase curta.
+3. O campo "example_en" deve ser uma frase simples e curta em inglês (máximo 10 palavras) usando a palavra "${word}". NÃO copie do contexto.
+4. Responda estritamente com JSON válido.
+
+JSON:
+{
+  "translation_pt_br": "tradução direta (1 a 2 palavras)",
+  "definition_pt_br": "definição curta de 1 frase simples",
+  "hint_pt_br": "dica curta de 3 palavras sem revelar a palavra",
+  "example_en": "frase curta nova em inglês",
+  "example_pt_br": "tradução direta da frase curta"
+}`;
+  }
 
   const response = await fetch('http://localhost:11434/api/generate', {
     method: 'POST',
@@ -41,7 +66,12 @@ Responda APENAS com JSON válido, sem texto extra:
       model: ollamaModel,
       prompt,
       stream: false,
-      format: 'json'
+      format: 'json',
+      options: {
+        temperature: 0.3,
+        num_predict: 200
+      },
+      keep_alive: '60m'
     })
   });
 
